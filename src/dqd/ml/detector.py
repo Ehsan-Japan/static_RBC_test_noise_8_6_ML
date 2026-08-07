@@ -17,6 +17,7 @@ import numpy as np
 import torch
 
 from .model import RayTransitionNet
+from .ray_dataset import normalize_trace
 
 DEFAULT_WEIGHTS = os.path.join(os.path.dirname(__file__), "weights",
                                "ray_cnn.pt")
@@ -33,8 +34,9 @@ class MLRayDetector:
         self.min_separation = min_separation
 
     def probability(self, trace: Sequence[float]) -> np.ndarray:
-        x = np.asarray(trace, dtype=np.float32)
-        x = (x - x.mean()) / (x.std() + 1e-9)          # same norm as training
+        # Shared with ray_dataset, not a second copy of the same formula: the
+        # detector must preprocess exactly as the training set was built.
+        x = normalize_trace(np.asarray(trace, dtype=np.float32))
         with torch.no_grad():
             logits = self.net(torch.tensor(x)[None, :])
         return torch.sigmoid(logits)[0].numpy()

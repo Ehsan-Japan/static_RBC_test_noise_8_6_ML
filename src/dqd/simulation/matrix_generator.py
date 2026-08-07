@@ -2,8 +2,9 @@
 CapacitanceMatrixGenerator — generates random capacitance matrices
 from interval specifications.  Absorbs the old matrix_utils.py.
 """
+import math
 import random
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 
 class CapacitanceMatrixGenerator:
@@ -22,6 +23,28 @@ class CapacitanceMatrixGenerator:
         self._rng = random.Random(seed)
 
     # ------------------------------------------------------------------
+    # Internal: one draw
+    # ------------------------------------------------------------------
+
+    def _draw(self, label: str, intervals: Dict[str, List[float]],
+              log_keys: Iterable[str]) -> float:
+        """
+        One value for `label`, uniform over its interval — or log-uniform if
+        the label is in `log_keys`.
+
+        Log-uniform exists for entries whose effect on the stability diagram
+        goes as 1/value (d1g1, d2g2 set the honeycomb period).  Drawing those
+        uniformly concentrates most devices at the short-period end and leaves
+        the long-period end thinly covered; drawing log-uniformly spreads the
+        period itself evenly.  Falls back to uniform if either bound is <= 0,
+        where the logarithm is undefined.
+        """
+        lo, hi = intervals.get(label, [0, 1])
+        if label in log_keys and lo > 0 and hi > 0:
+            return round(math.exp(self._rng.uniform(math.log(lo), math.log(hi))), 4)
+        return round(self._rng.uniform(lo, hi), 4)
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -30,6 +53,7 @@ class CapacitanceMatrixGenerator:
         intervals: Dict[str, List[float]],
         size: int,
         labels: List[List[str]],
+        log_keys: Iterable[str] = (),
     ) -> List[List[float]]:
         """
         Generate a symmetric square matrix whose entries are drawn uniformly
@@ -41,13 +65,10 @@ class CapacitanceMatrixGenerator:
         size      : int   side length of the square matrix
         labels    : list  size×size label grid (upper triangle mirrors lower)
         """
-        rng = self._rng
         matrix = [[0.0] * size for _ in range(size)]
         for i in range(size):
             for j in range(i, size):
-                label = labels[i][j]
-                lo, hi = intervals.get(label, [0, 1])
-                value = round(rng.uniform(lo, hi), 4)
+                value = self._draw(labels[i][j], intervals, log_keys)
                 matrix[i][j] = matrix[j][i] = value
         return matrix
 
@@ -56,6 +77,7 @@ class CapacitanceMatrixGenerator:
         intervals: Dict[str, List[float]],
         shape: List[int],
         labels: List[List[str]],
+        log_keys: Iterable[str] = (),
     ) -> List[List[float]]:
         """
         Generate a general (non-symmetric) matrix.
@@ -66,14 +88,11 @@ class CapacitanceMatrixGenerator:
         shape     : [rows, cols]
         labels    : list       rows×cols label grid
         """
-        rng = self._rng
         rows, cols = shape
         matrix = [[0.0] * cols for _ in range(rows)]
         for i in range(rows):
             for j in range(cols):
-                label = labels[i][j]
-                lo, hi = intervals.get(label, [0, 1])
-                matrix[i][j] = round(rng.uniform(lo, hi), 4)
+                matrix[i][j] = self._draw(labels[i][j], intervals, log_keys)
         return matrix
 
     # ------------------------------------------------------------------
@@ -87,18 +106,24 @@ class CapacitanceMatrixGenerator:
         Returns a dict with keys "Cdd", "Cgd", "Cds", "Cgs".
         """
         intervals = config.intervals
+        # Older configs predate log-uniform sampling and have no such attribute.
+        log_keys = getattr(config, "log_uniform_keys", frozenset())
         return {
             "Cdd": self.generate_symmetric(
-                intervals["Cdd"], size=2, labels=config.labels_Cdd
+                intervals["Cdd"], size=2, labels=config.labels_Cdd,
+                log_keys=log_keys,
             ),
             "Cgd": self.generate_general(
-                intervals["Cgd"], shape=[2, 3], labels=config.labels_Cgd
+                intervals["Cgd"], shape=[2, 3], labels=config.labels_Cgd,
+                log_keys=log_keys,
             ),
             "Cds": self.generate_general(
-                intervals["Cds"], shape=[1, 2], labels=config.labels_Cds
+                intervals["Cds"], shape=[1, 2], labels=config.labels_Cds,
+                log_keys=log_keys,
             ),
             "Cgs": self.generate_general(
-                intervals["Cgs"], shape=[1, 3], labels=config.labels_Cgs
+                intervals["Cgs"], shape=[1, 3], labels=config.labels_Cgs,
+                log_keys=log_keys,
             ),
         }
 

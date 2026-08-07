@@ -28,9 +28,11 @@ below 1.0, in either half, so both halves still produce visible honeycombs.
     train_cfg, test_cfg = split_configs()          # low half / high half
 """
 import copy
+import math
 from typing import Dict, List, Tuple
 
-from ..config.capacitance_config import DEFAULT_INTERVALS, CapacitanceConfig
+from ..config.capacitance_config import (DEFAULT_INTERVALS, LOG_UNIFORM_KEYS,
+                                         CapacitanceConfig)
 
 # The entries that actually move the transition lines.
 GEOMETRY_KEYS: Dict[str, List[str]] = {
@@ -39,14 +41,27 @@ GEOMETRY_KEYS: Dict[str, List[str]] = {
 }
 
 
-def _halves(lo: float, hi: float, gap: float) -> Tuple[List[float], List[float]]:
+def _halves(lo: float, hi: float, gap: float,
+            log: bool = False) -> Tuple[List[float], List[float]]:
     """
     Split [lo, hi] into a low and a high interval separated by a dead band.
 
     The gap (a fraction of the range) guarantees the two halves do not merely
     touch: without it a train draw at 2.4999 and a test draw at 2.5001 are the
     same device, and "disjoint intervals" would be true only on paper.
+
+    log=True splits at the GEOMETRIC midpoint instead.  Entries sampled
+    log-uniformly must be split the same way or the halves are lopsided in the
+    quantity that matters: an arithmetic split of d1g1 ∈ [1.2, 8.0] cuts at
+    4.6, which is 80% of the log-measure — the train half would get almost
+    every period and the test half a sliver at the dense end.  The geometric
+    cut at 3.1 gives each half an equal spread of honeycomb periods.
     """
+    if log and lo > 0 and hi > 0:
+        llo, lhi = math.log(lo), math.log(hi)
+        mid, half_gap = 0.5 * (llo + lhi), 0.5 * gap * (lhi - llo)
+        return ([lo, math.exp(mid - half_gap)],
+                [math.exp(mid + half_gap), hi])
     mid, span = 0.5 * (lo + hi), hi - lo
     half_gap = 0.5 * gap * span
     return [lo, mid - half_gap], [mid + half_gap, hi]
@@ -71,7 +86,7 @@ def split_intervals(intervals: Dict = None,
             lo, hi = base[matrix][key]
             if hi <= lo:
                 continue                       # degenerate, nothing to split
-            low, high = _halves(lo, hi, gap)
+            low, high = _halves(lo, hi, gap, log=key in LOG_UNIFORM_KEYS)
             train[matrix][key], test[matrix][key] = (
                 (high, low) if swap else (low, high))
     return train, test

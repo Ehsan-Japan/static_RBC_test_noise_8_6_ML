@@ -52,10 +52,50 @@ def _bilinear(ux, uy, Z, pts):
             + (1 - tx) * ty * Z[iy + 1, ix] + tx * ty * Z[iy + 1, ix + 1])
 
 
-def _zscore(X):
+# Default polynomial order removed from every trace before z-scoring.  See
+# normalize_trace() for why this is not zero.
+DETREND_DEGREE = 3
+
+
+def normalize_trace(X, detrend_degree: int = DETREND_DEGREE):
+    """
+    The ONE preprocessing the detector sees, at training and at inference.
+
+    Z-scoring alone is not enough.  Measured on the 300-device training run:
+    a degree-1 ramp explains 64% of the variance of a typical ray and a
+    degree-2 fit explains 92% — the charge sensor's own smooth response to
+    the gate voltage, which is identical from ray to ray and carries no
+    information about where the transitions are.  With that background left
+    in, the traces are nearly indistinguishable: effective rank 3.6 over 2400
+    rays, and half of them have a near-duplicate (cosine > 0.99).  Removing a
+    low-order polynomial first lifts the rank to 10.5 and drops duplicates to
+    28% on the same data, because what survives is the step structure.
+
+    Both callers MUST go through here.  detector.py used to carry its own copy
+    of the z-score, which is exactly the kind of thing that silently drifts
+    away from the training preprocessing and costs a re-training to find.
+
+    detrend_degree=0 restores the old plain z-score.
+    """
+    X = np.asarray(X, dtype=np.float32)
+    squeeze = X.ndim == 1
+    if squeeze:
+        X = X[None, :]
+    if detrend_degree > 0 and X.shape[1] > detrend_degree + 1:
+        t = np.linspace(-1.0, 1.0, X.shape[1])
+        B = np.vander(t, detrend_degree + 1)
+        # lstsq over all traces at once: B (n_points, deg+1), X.T (n_points, n)
+        coef = np.linalg.lstsq(B, X.T, rcond=None)[0]
+        X = X - (B @ coef).T
     mu = X.mean(axis=1, keepdims=True)
     sd = X.std(axis=1, keepdims=True) + 1e-9
-    return (X - mu) / sd
+    out = ((X - mu) / sd).astype(np.float32)
+    return out[0] if squeeze else out
+
+
+def _zscore(X):
+    """Backwards-compatible alias — plain z-score, no detrending."""
+    return normalize_trace(X, detrend_degree=0)
 
 
 # ----------------------------------------------------------------------
@@ -68,6 +108,7 @@ def rays_from_sample(sample_dir: str,
                      ray_length_frac: float = 0.7,
                      label_radius_frac: float = 1.5,
                      rng: Optional[np.random.Generator] = None,
+                     detrend_degree: int = DETREND_DEGREE,
                      ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Random rays through one sample's sensor grid, labeled from the
@@ -81,6 +122,8 @@ def rays_from_sample(sample_dir: str,
     label_radius_frac: labeling tolerance in units of one GROUND-TRUTH grid
                        cell (1.5 = the transition line plus its neighbours,
                        matching the band thickness the sweeps produce)
+    detrend_degree   : polynomial order removed before z-scoring, see
+                       normalize_trace().  0 = the old plain z-score.
     """
     rng = rng or np.random.default_rng()
     sim = os.path.join(sample_dir, "numpy", "simulation")
@@ -112,7 +155,7 @@ def rays_from_sample(sample_dir: str,
             # label = any ground-truth cell within `radius` of the ray point
             d2 = ((pts[:, None, :] - truth_pts[None, :, :]) ** 2).sum(-1)
             Y[k] = (d2.min(axis=1) < radius ** 2).astype(np.float32)
-    return _zscore(X), Y
+    return normalize_trace(X, detrend_degree), Y
 
 
 def rays_from_run(run_dir: str, rays_per_sample: int = 200,
@@ -138,7 +181,9 @@ def rays_from_run(run_dir: str, rays_per_sample: int = 200,
 # ----------------------------------------------------------------------
 
 def synthetic_rays(n_rays: int = 2000, n_points: int = 128,
-                   seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+                   seed: int = 0,
+                   detrend_degree: int = DETREND_DEGREE
+                   ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Charge-sensing-like traces: a few logistic steps of random sign, height,
     width and position, plus a slow background drift.  Labels mark points
@@ -161,7 +206,9 @@ def synthetic_rays(n_rays: int = 2000, n_points: int = 128,
             z = z + h / (1.0 + np.exp(-(t - c) / w))
             Y[k, np.abs(t - c) < 2 * w] = 1.0
         X[k] = z
-    return _zscore(X), Y
+    # Same normalization as the real rays — pretraining on traces preprocessed
+    # differently from the fine-tuning data is a silent domain gap.
+    return normalize_trace(X, detrend_degree), Y
 
 
 # ----------------------------------------------------------------------
